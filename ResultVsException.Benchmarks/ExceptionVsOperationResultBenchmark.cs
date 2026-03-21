@@ -1,4 +1,5 @@
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Order;
 using OperationResult;
 
@@ -17,6 +18,8 @@ namespace ResultVsException.Benchmarks;
 [MemoryDiagnoser]
 [Orderer(SummaryOrderPolicy.FastestToSlowest)]
 [RankColumn]
+[CategoriesColumn]
+[GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
 public class ExceptionVsOperationResultBenchmark
 {
     private const string ErrorMessage = "Validation failed: value is out of range.";
@@ -25,6 +28,7 @@ public class ExceptionVsOperationResultBenchmark
     // Success path — no error, no exception
     // -------------------------------------------------------------------------
 
+    [BenchmarkCategory("Success")]
     [Benchmark(Description = "Exception  | success")]
     public int Exception_Success()
     {
@@ -32,7 +36,8 @@ public class ExceptionVsOperationResultBenchmark
         catch { return -1; }
     }
 
-    [Benchmark(Description = "Result     | success")]
+    [BenchmarkCategory("Success")]
+    [Benchmark(Description = "Result     | success", Baseline = true)]
     public int Result_Success()
     {
         var r = ParseAgeResult(25);
@@ -43,6 +48,7 @@ public class ExceptionVsOperationResultBenchmark
     // Failure path — one throw vs one Result carrying the exception
     // -------------------------------------------------------------------------
 
+    [BenchmarkCategory("Failure")]
     [Benchmark(Description = "Exception  | failure")]
     public int Exception_Failure()
     {
@@ -50,6 +56,7 @@ public class ExceptionVsOperationResultBenchmark
         catch { return -1; }
     }
 
+    [BenchmarkCategory("Failure")]
     [Benchmark(Description = "Result     | failure", Baseline = true)]
     public int Result_Failure()
     {
