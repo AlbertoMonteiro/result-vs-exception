@@ -51,49 +51,33 @@ jobs:
       - name: Publish results to Job Summary
         if: always()
         run: |
-          find_report() {
-            find ./BenchmarkResults -name "*.md" | grep -i "$1" | head -n 1
-          }
+          REPORT=$(find ./BenchmarkResults -name "*.md" | head -n 1)
 
           {
             echo "# Exception vs OperationResult — Benchmark Results"
             echo ""
-            echo "> **Reading the numbers:** \`Allocated\` = heap bytes per *single* benchmark iteration."
-            echo "> Every \`throw\` allocates a new \`Exception\` object + full stack trace on Gen0."
-            echo "> Under load, those allocations trigger extra GC collections that pause **all** threads —"
-            echo "> degrading even the successful 90 % of requests."
+            echo "Each benchmark represents **a single operation** — one \`throw\` or one \`return Result\`,"
+            echo "exactly as it would appear in production code."
+            echo "BenchmarkDotNet runs it in a tight loop internally to get stable measurements."
             echo ""
-
-            echo "## Chapter 1 — Raw per-call cost"
-            echo "_The failure path with exceptions is ~40–50× slower, not ~40% as commonly claimed._"
-            echo ""
-            REPORT=$(find_report "SingleCall")
-            if [ -n "$REPORT" ]; then cat "$REPORT"; else echo "_Report not found._"; fi
-            echo ""
-
-            echo "## Chapter 2 — Simulated API batch (1 000 requests, variable error rate)"
-            echo "_Even at a 10 % error rate the aggregate cost is clearly visible in time and allocation._"
-            echo ""
-            REPORT=$(find_report "ApiBatch")
-            if [ -n "$REPORT" ]; then cat "$REPORT"; else echo "_Report not found._"; fi
-            echo ""
-
-            echo "## Chapter 3 — GC pressure"
-            echo "_Each thrown exception allocates heap memory. The \`Allocated\` column shows the hidden cost._"
-            echo ""
-            REPORT=$(find_report "GcPressure")
-            if [ -n "$REPORT" ]; then cat "$REPORT"; else echo "_Report not found._"; fi
-            echo ""
-
-            echo "---"
-            echo "### Key takeaways"
-            echo ""
-            echo "| Concern | Detail |"
+            echo "| Column | Meaning |"
             echo "|---|---|"
-            echo "| **Latency ratio** | Failure path with \`Exception\` is **~40–50× slower** than \`Result\` |"
-            echo "| **Heap allocation** | Each \`throw\` allocates a new \`Exception\` + stack trace on Gen0 |"
-            echo "| **GC impact** | At 10 % errors on 1 000 RPS → 100 exceptions/s → extra GC pauses affect **all** threads |"
-            echo "| **Success path** | Both approaches are equally fast — zero overhead adopting \`Result\` |"
+            echo "| **Mean** | Average time per single operation |"
+            echo "| **Allocated** | Heap bytes allocated per single operation |"
+            echo ""
+            if [ -n "$REPORT" ]; then
+              cat "$REPORT"
+            else
+              echo "_Report not found. Check the 'List generated report files' step above._"
+            fi
+            echo ""
+            echo "---"
+            echo "### Reading the results"
+            echo ""
+            echo "- **Success path**: both approaches take the same time — adopting \`Result\` has zero overhead on the happy path."
+            echo "- **Failure path**: \`Exception\` is **~40–50× slower** per call, not ~40% as often claimed."
+            echo "- **Allocated**: every \`throw\` allocates a new \`Exception\` object + stack trace on the heap;"
+            echo "  \`Result\` allocates nothing extra. Under sustained load this creates GC pressure that can pause all threads."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark artifacts
@@ -112,46 +96,40 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            const resultsDir = './BenchmarkResults';
-
-            const findReport = (keyword) => {
-              const walk = (dir) => {
-                let entries;
-                try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
-                catch { return null; }
-                for (const f of entries) {
-                  const full = path.join(dir, f.name);
-                  if (f.isDirectory()) { const r = walk(full); if (r) return r; }
-                  else if (f.name.endsWith('.md') && f.name.toLowerCase().includes(keyword.toLowerCase())) return full;
-                }
-                return null;
-              };
-              return walk(resultsDir);
+            const findReport = (dir) => {
+              let entries;
+              try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+              catch { return null; }
+              for (const f of entries) {
+                const full = path.join(dir, f.name);
+                if (f.isDirectory()) { const r = findReport(full); if (r) return r; }
+                else if (f.name.endsWith('.md')) return full;
+              }
+              return null;
             };
 
-            const chapters = [
-              { label: 'Chapter 1 — Raw per-call cost', key: 'SingleCall', note: 'The failure path is ~40–50× slower with exceptions.' },
-              { label: 'Chapter 2 — API batch (1 000 requests, variable error rate)', key: 'ApiBatch', note: 'Cost compounds even at a 10 % error rate.' },
-              { label: 'Chapter 3 — GC pressure', key: 'GcPressure', note: 'The `Allocated` column shows the hidden cost of every `throw`.' },
-            ];
+            const file = findReport('./BenchmarkResults');
+            const table = file ? fs.readFileSync(file, 'utf8') : '_Report not found._';
 
-            let body = '# Exception vs OperationResult — Benchmark Results\n\n';
-            body += '> **Reading the numbers:** `Allocated` = heap bytes per single benchmark iteration.\n';
-            body += '> Every `throw` allocates a new `Exception` + stack trace on Gen0, triggering GC pauses that hurt **all** threads.\n\n';
-
-            for (const { label, key, note } of chapters) {
-              body += `## ${label}\n_${note}_\n\n`;
-              const file = findReport(key);
-              body += file ? fs.readFileSync(file, 'utf8') : '_Report not found._';
-              body += '\n\n';
-            }
-
-            body += '---\n### Key takeaways\n\n';
-            body += '| Concern | Detail |\n|---|---|\n';
-            body += '| **Latency ratio** | Failure path with `Exception` is **~40–50× slower** than `Result` |\n';
-            body += '| **Heap allocation** | Each `throw` allocates a new `Exception` + stack trace on Gen0 |\n';
-            body += '| **GC impact** | At 10 % errors → extra GC pauses degrade **all** requests, not just failing ones |\n';
-            body += '| **Success path** | Both approaches are equally fast — zero overhead adopting `Result` |\n';
+            const body = [
+              '# Exception vs OperationResult — Benchmark Results',
+              '',
+              'Each benchmark represents **a single operation** — one `throw` or one `return Result`, exactly as in production code.',
+              '',
+              '| Column | Meaning |',
+              '|---|---|',
+              '| **Mean** | Average time per single operation |',
+              '| **Allocated** | Heap bytes allocated per single operation |',
+              '',
+              table,
+              '',
+              '---',
+              '### Reading the results',
+              '',
+              '- **Success path**: both approaches are identical — zero overhead adopting `Result`.',
+              '- **Failure path**: `Exception` is **~40–50× slower** per call, not ~40% as often claimed.',
+              '- **Allocated**: every `throw` allocates a new `Exception` + stack trace; `Result` allocates nothing extra.',
+            ].join('\n');
 
             // Delete previous bot comment if any
             const { data: comments } = await github.rest.issues.listComments({
