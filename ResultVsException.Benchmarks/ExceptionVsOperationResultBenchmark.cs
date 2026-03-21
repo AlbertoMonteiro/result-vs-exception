@@ -1,62 +1,65 @@
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Columns;
 using BenchmarkDotNet.Order;
 using Divino.OperationResult;
 
 namespace ResultVsException.Benchmarks;
 
 /// <summary>
-/// Benchmarks that counter the "it's just microseconds / ~40% gain" argument.
+/// Three benchmark classes that counter the "it's just microseconds / ~40% gain" argument.
 ///
-/// The real story:
-///   1. The difference is NOT ~40% — it is ~40-50x on the failure path.
-///   2. Every thrown exception allocates a new object + stack trace on the heap,
-///      creating GC pressure that hurts the *entire* application, not only the
-///      failing call-sites.
-///   3. At realistic API error rates (even 10 %), the aggregate cost compounds
-///      quickly under load, degrading throughput for successful requests too.
+/// Chapter 1 – SingleCallBenchmark
+///   The per-call cost on both the success and failure paths.
+///   The failure path is ~40-50x slower with exceptions, not ~40% as often claimed.
 ///
-/// Three benchmark classes tell three chapters of that story:
-///   • Chapter 1 – raw per-call cost (single operation, isolated)
-///   • Chapter 2 – simulated API batch (N requests, configurable error rate)
-///   • Chapter 3 – memory / GC pressure (allocations per operation)
+/// Chapter 2 – ApiBatchBenchmark
+///   Simulates an HTTP endpoint processing 1 000 requests at configurable error rates
+///   (0 %, 10 %, 50 %, 100 %).  Shows how the cost compounds at realistic error rates.
+///
+/// Chapter 3 – GcPressureBenchmark
+///   Every thrown exception allocates a new object + stack trace on the Gen0 heap.
+///   The MemoryDiagnoser columns (Allocated) show this cost directly.
+///   Under sustained load those allocations trigger extra GC collections that pause
+///   ALL threads — degrading even the successful 90 % of requests.
 /// </summary>
 
 
 // =============================================================================
 // Chapter 1 – Raw per-call cost
-// Answers: "How expensive is a single failure?"
 // =============================================================================
 [MemoryDiagnoser]
 [Orderer(SummaryOrderPolicy.FastestToSlowest)]
 [RankColumn]
-[GroupBenchmarksBy(BenchmarkDotNet.Configs.BenchmarkLogicalGroupRule.ByCategory)]
-[CategoriesColumn]
 public class SingleCallBenchmark
 {
     private const string ErrorMessage = "Validation failed: value is out of range.";
 
-    [Benchmark(Description = "Exception", Baseline = true), BenchmarkCategory("Success path")]
+    // --- Success path ---
+
+    [Benchmark(Description = "Exception  | success path")]
     public int Exception_Success()
     {
         try { return ParseAge(25); }
         catch { return -1; }
     }
 
-    [Benchmark(Description = "OperationResult"), BenchmarkCategory("Success path")]
+    [Benchmark(Description = "Result     | success path")]
     public int OperationResult_Success()
     {
         var r = ParseAgeResult(25);
         return r.IsSuccess ? r.Value : -1;
     }
 
-    [Benchmark(Description = "Exception", Baseline = true), BenchmarkCategory("Failure path")]
+    // --- Failure path ---
+
+    [Benchmark(Description = "Exception  | failure path")]
     public int Exception_Failure()
     {
         try { return ParseAge(-1); }
         catch { return -1; }
     }
 
-    [Benchmark(Description = "OperationResult"), BenchmarkCategory("Failure path")]
+    [Benchmark(Description = "Result     | failure path")]
     public int OperationResult_Failure()
     {
         var r = ParseAgeResult(-1);
@@ -80,12 +83,7 @@ public class SingleCallBenchmark
 
 
 // =============================================================================
-// Chapter 2 – Simulated API batch
-// Answers: "Does it matter at realistic error rates?"
-//
-// Models an HTTP endpoint that validates input and returns errors for invalid
-// requests. [Params] sweeps several error rates so the numbers speak for
-// themselves.
+// Chapter 2 – Simulated API batch (1 000 requests, variable error rate)
 // =============================================================================
 [MemoryDiagnoser]
 [Orderer(SummaryOrderPolicy.FastestToSlowest)]
@@ -95,7 +93,6 @@ public class ApiBatchBenchmark
     private const int BatchSize = 1_000;
     private const string ErrorMessage = "Invalid request payload.";
 
-    // Error rates: 0 % (all good), 10 %, 50 %, 100 % (all bad).
     [Params(0, 10, 50, 100)]
     public int ErrorRatePercent { get; set; }
 
@@ -104,15 +101,13 @@ public class ApiBatchBenchmark
     [GlobalSetup]
     public void Setup()
     {
-        // Pre-build a fixed input array so the benchmark only measures the
-        // dispatch cost, not random number generation.
         _inputs = new int[BatchSize];
         int errorCount = BatchSize * ErrorRatePercent / 100;
         for (int i = 0; i < BatchSize; i++)
             _inputs[i] = i < errorCount ? -1 : i + 1; // -1 triggers error path
     }
 
-    [Benchmark(Description = "Exception", Baseline = true)]
+    [Benchmark(Description = "Exception")]
     public int ProcessBatch_Exception()
     {
         int processed = 0;
@@ -124,13 +119,13 @@ public class ApiBatchBenchmark
             }
             catch (ArgumentOutOfRangeException)
             {
-                // In a real API we'd map this to a 400 response.
+                // In a real API: map to 400 response.
             }
         }
         return processed;
     }
 
-    [Benchmark(Description = "OperationResult")]
+    [Benchmark(Description = "Result")]
     public int ProcessBatch_OperationResult()
     {
         int processed = 0;
@@ -161,13 +156,7 @@ public class ApiBatchBenchmark
 
 
 // =============================================================================
-// Chapter 3 – GC pressure
-// Answers: "Why does it hurt even successful requests?"
-//
-// Throws N exceptions in a tight loop without any pauses. The resulting GC
-// pressure (Gen0/Gen1 collections) is visible in the MemoryDiagnoser columns
-// and explains why a service with a 10 % error rate can degrade latency for
-// the other 90 % of requests — stop-the-world GC pauses affect every thread.
+// Chapter 3 – GC pressure (heap allocations per error)
 // =============================================================================
 [MemoryDiagnoser]
 [Orderer(SummaryOrderPolicy.FastestToSlowest)]
@@ -179,7 +168,7 @@ public class GcPressureBenchmark
     [Params(100, 1_000, 10_000)]
     public int Iterations { get; set; }
 
-    [Benchmark(Description = "Exception (allocated per error)", Baseline = true)]
+    [Benchmark(Description = "Exception  (allocates per error)")]
     public int ThrowAndCatch_Exception()
     {
         int caught = 0;
@@ -191,7 +180,7 @@ public class GcPressureBenchmark
         return caught;
     }
 
-    [Benchmark(Description = "OperationResult (no heap per error)")]
+    [Benchmark(Description = "Result     (no heap per error)")]
     public int ReturnResult_OperationResult()
     {
         int errors = 0;

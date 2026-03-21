@@ -41,49 +41,59 @@ jobs:
             -c Release \
             --no-build \
             -- \
-            --exporters json markdown \
+            --exporters markdown \
             --artifacts ./BenchmarkResults
+
+      - name: List generated report files
+        if: always()
+        run: find ./BenchmarkResults -name "*.md" | sort
 
       - name: Publish results to Job Summary
         if: always()
         run: |
+          find_report() {
+            find ./BenchmarkResults -name "*.md" | grep -i "$1" | head -n 1
+          }
+
           {
             echo "# Exception vs OperationResult — Benchmark Results"
             echo ""
-            echo "> **Reading the numbers:** \`Allocated\` shows heap bytes per operation."
-            echo "> Every thrown exception allocates a new object + full stack trace."
-            echo "> Under load, that means more GC collections — which pause **all** threads, not just the failing ones."
+            echo "> **Reading the numbers:** \`Allocated\` = heap bytes per *single* benchmark iteration."
+            echo "> Every \`throw\` allocates a new \`Exception\` object + full stack trace on Gen0."
+            echo "> Under load, those allocations trigger extra GC collections that pause **all** threads —"
+            echo "> degrading even the successful 90 % of requests."
             echo ""
 
             echo "## Chapter 1 — Raw per-call cost"
-            echo "_How expensive is a single failure?_"
+            echo "_The failure path with exceptions is ~40–50× slower, not ~40% as commonly claimed._"
             echo ""
-            REPORT=$(find ./BenchmarkResults -name "*SingleCall*-report.md" | head -n 1)
+            REPORT=$(find_report "SingleCall")
             if [ -n "$REPORT" ]; then cat "$REPORT"; else echo "_Report not found._"; fi
             echo ""
 
             echo "## Chapter 2 — Simulated API batch (1 000 requests, variable error rate)"
-            echo "_Does it matter at realistic error rates?_"
+            echo "_Even at a 10 % error rate the aggregate cost is clearly visible in time and allocation._"
             echo ""
-            REPORT=$(find ./BenchmarkResults -name "*ApiBatch*-report.md" | head -n 1)
+            REPORT=$(find_report "ApiBatch")
             if [ -n "$REPORT" ]; then cat "$REPORT"; else echo "_Report not found._"; fi
             echo ""
 
-            echo "## Chapter 3 — GC pressure (N errors in a tight loop)"
-            echo "_Why does it hurt even successful requests?_"
+            echo "## Chapter 3 — GC pressure"
+            echo "_Each thrown exception allocates heap memory. The \`Allocated\` column shows the hidden cost._"
             echo ""
-            REPORT=$(find ./BenchmarkResults -name "*GcPressure*-report.md" | head -n 1)
+            REPORT=$(find_report "GcPressure")
             if [ -n "$REPORT" ]; then cat "$REPORT"; else echo "_Report not found._"; fi
             echo ""
 
             echo "---"
-            echo "### Takeaways"
+            echo "### Key takeaways"
+            echo ""
             echo "| Concern | Detail |"
             echo "|---|---|"
-            echo "| **Latency ratio** | Failure path with \`Exception\` is **~40–50× slower** than \`OperationResult\` |"
-            echo "| **Heap allocation** | Each \`throw\` allocates a new \`Exception\` object + stack trace on Gen0 heap |"
-            echo "| **GC pressure** | At 10 % error rate on 1 000 RPS → 100 exceptions/s → extra Gen0 GC pauses that delay *all* requests |"
-            echo "| **Success path** | Both approaches are equally fast on the happy path — zero overhead for adopting OperationResult |"
+            echo "| **Latency ratio** | Failure path with \`Exception\` is **~40–50× slower** than \`Result\` |"
+            echo "| **Heap allocation** | Each \`throw\` allocates a new \`Exception\` + stack trace on Gen0 |"
+            echo "| **GC impact** | At 10 % errors on 1 000 RPS → 100 exceptions/s → extra GC pauses affect **all** threads |"
+            echo "| **Success path** | Both approaches are equally fast — zero overhead adopting \`Result\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark artifacts
@@ -103,43 +113,47 @@ jobs:
             const path = require('path');
 
             const resultsDir = './BenchmarkResults';
-            const chapters = [
-              { label: 'Chapter 1 — Raw per-call cost', pattern: 'SingleCall' },
-              { label: 'Chapter 2 — API batch (1 000 requests, variable error rate)', pattern: 'ApiBatch' },
-              { label: 'Chapter 3 — GC pressure', pattern: 'GcPressure' },
-            ];
 
-            const findReport = (pattern) => {
+            const findReport = (keyword) => {
               const walk = (dir) => {
-                for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                let entries;
+                try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+                catch { return null; }
+                for (const f of entries) {
                   const full = path.join(dir, f.name);
                   if (f.isDirectory()) { const r = walk(full); if (r) return r; }
-                  else if (f.name.includes(pattern) && f.name.endsWith('-report.md')) return full;
+                  else if (f.name.endsWith('.md') && f.name.toLowerCase().includes(keyword.toLowerCase())) return full;
                 }
                 return null;
               };
               return walk(resultsDir);
             };
 
-            let body = '# Exception vs OperationResult — Benchmark Results\n\n';
-            body += '> **Reading the numbers:** `Allocated` shows heap bytes per operation. ';
-            body += 'Every thrown exception allocates a new object + full stack trace, causing GC pressure that hurts **all** threads — including successful requests.\n\n';
+            const chapters = [
+              { label: 'Chapter 1 — Raw per-call cost', key: 'SingleCall', note: 'The failure path is ~40–50× slower with exceptions.' },
+              { label: 'Chapter 2 — API batch (1 000 requests, variable error rate)', key: 'ApiBatch', note: 'Cost compounds even at a 10 % error rate.' },
+              { label: 'Chapter 3 — GC pressure', key: 'GcPressure', note: 'The `Allocated` column shows the hidden cost of every `throw`.' },
+            ];
 
-            for (const { label, pattern } of chapters) {
-              body += `## ${label}\n\n`;
-              const file = findReport(pattern);
+            let body = '# Exception vs OperationResult — Benchmark Results\n\n';
+            body += '> **Reading the numbers:** `Allocated` = heap bytes per single benchmark iteration.\n';
+            body += '> Every `throw` allocates a new `Exception` + stack trace on Gen0, triggering GC pauses that hurt **all** threads.\n\n';
+
+            for (const { label, key, note } of chapters) {
+              body += `## ${label}\n_${note}_\n\n`;
+              const file = findReport(key);
               body += file ? fs.readFileSync(file, 'utf8') : '_Report not found._';
               body += '\n\n';
             }
 
-            body += '---\n### Takeaways\n';
+            body += '---\n### Key takeaways\n\n';
             body += '| Concern | Detail |\n|---|---|\n';
-            body += '| **Latency ratio** | Failure path with `Exception` is **~40–50× slower** than `OperationResult` |\n';
-            body += '| **Heap allocation** | Each `throw` allocates a new `Exception` object + stack trace on Gen0 heap |\n';
-            body += '| **GC pressure** | At 10 % error rate on 1 000 RPS → 100 exceptions/s → extra GC pauses delay *all* requests |\n';
-            body += '| **Success path** | Both approaches are equally fast on the happy path |\n';
+            body += '| **Latency ratio** | Failure path with `Exception` is **~40–50× slower** than `Result` |\n';
+            body += '| **Heap allocation** | Each `throw` allocates a new `Exception` + stack trace on Gen0 |\n';
+            body += '| **GC impact** | At 10 % errors → extra GC pauses degrade **all** requests, not just failing ones |\n';
+            body += '| **Success path** | Both approaches are equally fast — zero overhead adopting `Result` |\n';
 
-            // Replace previous bot comment
+            // Delete previous bot comment if any
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
