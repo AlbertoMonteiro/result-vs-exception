@@ -1,6 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Order;
-using Divino.OperationResult;
 
 namespace ResultVsException.Benchmarks;
 
