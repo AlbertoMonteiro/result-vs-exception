@@ -50,7 +50,7 @@ public class ExceptionVsOperationResultBenchmark
         catch { return -1; }
     }
 
-    [Benchmark(Description = "Result     | failure")]
+    [Benchmark(Description = "Result     | failure", Baseline = true)]
     public int Result_Failure()
     {
         var r = ParseAgeResult(-1);
