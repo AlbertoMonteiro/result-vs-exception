@@ -39,19 +39,16 @@ jobs:
           dotnet run \
             --project ResultVsException.Benchmarks/ResultVsException.Benchmarks.csproj \
             -c Release \
-            --no-build \
-            -- \
-            --exporters markdown \
-            --artifacts ./BenchmarkResults
+            --no-build
 
       - name: List generated report files
         if: always()
-        run: find ./BenchmarkResults -name "*.md" | sort
+        run: find ./BenchmarkDotNet.Artifacts -name "*.md" | sort
 
       - name: Publish results to Job Summary
         if: always()
         run: |
-          REPORT=$(find ./BenchmarkResults -name "*.md" | head -n 1)
+          REPORT=$(find ./BenchmarkDotNet.Artifacts -name "*-report-github.md" | head -n 1)
 
           {
             echo "# Exception vs OperationResult — Benchmark Results"
@@ -85,7 +82,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
-          path: ./BenchmarkResults/
+          path: ./BenchmarkDotNet.Artifacts/
           retention-days: 30
 
       - name: Comment results on PR
@@ -108,7 +105,7 @@ jobs:
               return null;
             };
 
-            const file = findReport('./BenchmarkResults');
+            const file = findReport('./BenchmarkDotNet.Artifacts');
             const table = file ? fs.readFileSync(file, 'utf8') : '_Report not found._';
 
             const body = [
